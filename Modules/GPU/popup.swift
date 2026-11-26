@@ -71,7 +71,7 @@ internal class Popup: PopupWrapper {
     }
     
     private func initDashboard() -> NSView {
-        let view: NSView = NSView(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: self.dashboardHeight))
+        let view: GlassView = glassCard(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: self.dashboardHeight))
         view.heightAnchor.constraint(equalToConstant: view.bounds.height).isActive = true
         
         let usageSize = self.dashboardHeight-20
@@ -104,10 +104,7 @@ internal class Popup: PopupWrapper {
         let view: NSView = NSView(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: self.chartHeight))
         view.heightAnchor.constraint(equalToConstant: 90 + Constants.Popup.separatorHeight).isActive = true
         let separator = separatorView(localizedString("Usage history"), origin: NSPoint(x: 0, y: self.chartHeight-Constants.Popup.separatorHeight), width: self.frame.width)
-        let container: NSView = NSView(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: separator.frame.origin.y))
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
-        container.layer?.cornerRadius = Constants.Popup.radius
+        let container: GlassView = glassCard(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: separator.frame.origin.y))
         
         let chartFrame = NSRect(x: 1, y: 0, width: view.frame.width - 2, height: container.frame.height)
         self.chart = LineChartView(frame: chartFrame, num: self.lineChartHistory, scale: self.lineChartScale, fixedScale: self.lineChartFixedScale)

@@ -66,6 +66,10 @@ public class Store {
     public func int(key: String, defaultValue value: Int) -> Int {
         return self.getValue(for: key, type: Int.self) ?? value
     }
+
+    public func double(key: String, defaultValue value: Double) -> Double {
+        return self.getValue(for: key, type: Double.self) ?? value
+    }
     
     public func array(key: String, defaultValue value: [Any]) -> [Any] {
         return self.getValue(for: key, type: [Any].self) ?? value
@@ -84,6 +88,10 @@ public class Store {
     }
     
     public func set(key: String, value: Int) {
+        self.setValue(value, for: key)
+    }
+
+    public func set(key: String, value: Double) {
         self.setValue(value, for: key)
     }
     

@@ -24,9 +24,8 @@ extension CWPHYMode: @retroactive CustomStringConvertible {
         case .mode11g:  return "802.11g"
         case .mode11n:  return "802.11n"
         case .mode11ax: return "802.11ax"
-        case .mode11be: return "802.11be"
         case .modeNone: return "none"
-        @unknown default: return "unknown"
+        @unknown default: return "unknown" // includes 802.11be (Wi-Fi 7) on SDKs that lack the case
         }
     }
 }

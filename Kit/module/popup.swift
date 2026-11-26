@@ -139,7 +139,7 @@ internal class PopupViewController: NSViewController {
             x: 0,
             y: 0,
             width: Constants.Popup.width + (Constants.Popup.margins * 2),
-            height: Constants.Popup.height+Constants.Popup.headerHeight
+            height: Constants.Popup.height + Constants.Popup.headerHeight + Constants.Popup.footerHeight
         ), module: module)
         super.init(nibName: nil, bundle: nil)
     }
@@ -180,11 +180,12 @@ internal class PopupViewController: NSViewController {
 internal class PopupView: NSView {
     private var view: Popup_p? = nil
     
-    private var foreground: NSVisualEffectView
+    private var foreground: NSView
     private var background: NSView
     
     private let header: HeaderView
     private let body: NSScrollView
+    private let footer: GlassTuningView
     
     override var intrinsicContentSize: CGSize {
         return CGSize(width: self.frame.width, height: self.frame.height)
@@ -201,25 +202,58 @@ internal class PopupView: NSView {
         ), module: module)
         self.body = NSScrollView(frame: NSRect(
             x: Constants.Popup.margins,
-            y: Constants.Popup.margins,
+            y: Constants.Popup.margins + Constants.Popup.footerHeight,
             width: frame.width - Constants.Popup.margins*2,
-            height: frame.height - self.header.frame.height - Constants.Popup.margins*2
+            height: frame.height - self.header.frame.height - Constants.Popup.margins*2 - Constants.Popup.footerHeight
+        ))
+        self.footer = GlassTuningView(frame: NSRect(
+            x: Constants.Popup.margins,
+            y: 4,
+            width: frame.width - Constants.Popup.margins*2,
+            height: Constants.Popup.footerHeight
         ))
         self.windowHeight = NSScreen.main?.visibleFrame.height
         self.containerHeight = self.body.documentView?.frame.height
         
-        self.foreground = NSVisualEffectView(frame: frame)
-        self.foreground.material = .titlebar
-        self.foreground.blendingMode = .behindWindow
-        self.foreground.state = .active
-        self.foreground.wantsLayer = true
-        self.foreground.layer?.backgroundColor = NSColor.red.cgColor
-        self.foreground.layer?.cornerRadius = 6
-        
-        self.background = NSView(frame: frame)
-        self.background.wantsLayer = true
-        self.foreground.addSubview(self.background)
-        
+        if #available(macOS 26.0, *) {
+            // Native Liquid Glass sheet. IMPORTANT: all interactive content
+            // must live inside `contentView` — that is the only arrangement
+            // NSGlassEffectView guarantees receives events and legibility
+            // treatment (a glass view layered as a background sibling
+            // swallows clicks for everything above it).
+            let glass = NSGlassEffectView(frame: frame)
+            glass.cornerRadius = Constants.Popup.glassRadius
+            // `.regular` + a strong tint floor makes the sheet read OPAQUE
+            // (but still glass — adaptive material, rim lighting), while the
+            // bubbles inside are the clear, refractive glass elements.
+            glass.style = .regular
+            let container = NSView(frame: frame)
+            glass.contentView = container
+            self.foreground = glass
+            self.background = container
+        } else {
+            // Frosted emulation: blur + tint + luminous edge + specular sheen.
+            let effect = NSVisualEffectView(frame: frame)
+            effect.material = .underWindowBackground
+            effect.blendingMode = .behindWindow
+            effect.state = .active
+            effect.wantsLayer = true
+            effect.layer?.masksToBounds = true
+            effect.layer?.cornerRadius = Constants.Popup.glassRadius
+            effect.layer?.cornerCurve = .continuous
+            effect.layer?.borderWidth = 1
+            self.foreground = effect
+
+            self.background = NSView(frame: frame)
+            self.background.wantsLayer = true
+            self.foreground.addSubview(self.background)
+
+            // Specular highlight falling from the top edge, like light hitting glass.
+            let sheen = SheenView(frame: NSRect(x: 0, y: frame.height - 60, width: frame.width, height: 60))
+            sheen.autoresizingMask = [.width, .minYMargin]
+            self.background.addSubview(sheen)
+        }
+
         super.init(frame: frame)
         
         self.body.drawsBackground = false
@@ -229,18 +263,82 @@ internal class PopupView: NSView {
         self.body.hasHorizontalScroller = false
         self.body.autohidesScrollers = true
         self.body.horizontalScrollElasticity = .none
-        
-        self.addSubview(self.foreground, positioned: .below, relativeTo: .none)
-        self.addSubview(self.header)
-        self.addSubview(self.body)
+
+        if #available(macOS 26.0, *) {
+            // Event backstop. The glass sheet is composited OUT-OF-PROCESS by
+            // the window server, so the app's own window surface is fully
+            // transparent — and the window server click-throughs windows with
+            // no opaque pixels, meaning mouse events never reach the app at
+            // all (root cause of the "nothing is clickable" bug; in-process
+            // event injection works fine). This near-invisible in-process
+            // layer restores the window's hit region. Do not remove it.
+            let backstop = NSView(frame: frame)
+            backstop.wantsLayer = true
+            backstop.autoresizingMask = [.width, .height]
+            backstop.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.02).cgColor
+            backstop.layer?.cornerRadius = Constants.Popup.glassRadius
+            backstop.layer?.cornerCurve = .continuous
+            self.addSubview(backstop)
+
+            // Header, body and footer live INSIDE the glass contentView.
+            self.addSubview(self.foreground)
+            self.background.addSubview(self.header)
+            self.background.addSubview(self.body)
+            self.background.addSubview(self.footer)
+        } else {
+            self.addSubview(self.foreground, positioned: .below, relativeTo: .none)
+            self.addSubview(self.header)
+            self.addSubview(self.body)
+            self.addSubview(self.footer)
+        }
+
+        NotificationCenter.default.addObserver(self, selector: #selector(self.glassLevelsChanged), name: .glassLevelsChanged, object: nil)
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
+    deinit {
+        NotificationCenter.default.removeObserver(self, name: .glassLevelsChanged, object: nil)
+    }
+
+    @objc private func glassLevelsChanged() {
+        self.updateLayer()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        // Re-tint the glass when the system light/dark switch flips.
+        self.updateLayer()
+    }
+
     override func updateLayer() {
-        self.background.layer?.backgroundColor = self.isDarkMode ? .clear : NSColor.white.cgColor
+        let dark = self.isDarkModeEffective
+        // GlassLevels.fill blends the slider level between a floor/ceiling
+        // per appearance and never reaches full opacity, so the sheet always
+        // keeps some glass refraction — and dark mode reliably reads dark
+        // even over a bright wallpaper instead of just faintly whitening it.
+        let fill = GlassLevels.fill(.background, dark: dark)
+        if #available(macOS 26.0, *) {
+            if let glass = self.foreground as? NSGlassEffectView {
+                glass.tintColor = fill
+            }
+            // Luminous rim around the whole sheet so it reads as a distinct
+            // surface against the desktop.
+            self.layer?.cornerRadius = Constants.Popup.glassRadius
+            self.layer?.cornerCurve = .continuous
+            self.layer?.borderWidth = 1
+            self.layer?.borderColor = (dark
+                ? NSColor.white.withAlphaComponent(0.22)
+                : NSColor.white.withAlphaComponent(0.65)).cgColor
+            return
+        }
+        // Emulation: same tint applied as the blur's background fill.
+        self.background.layer?.backgroundColor = fill.cgColor
+        self.foreground.layer?.borderColor = (dark
+            ? NSColor.white.withAlphaComponent(0.16)
+            : NSColor.white.withAlphaComponent(0.65)).cgColor
     }
     
     fileprivate func setView(_ view: Popup_p?) {
@@ -249,7 +347,7 @@ internal class PopupView: NSView {
         var isScrollVisible: Bool = false
         var size: NSSize = NSSize(
             width: (view?.frame.width ?? Constants.Popup.width) + (Constants.Popup.margins*2),
-            height: (view?.frame.height ?? 0) + Constants.Popup.headerHeight + (Constants.Popup.margins*2)
+            height: (view?.frame.height ?? 0) + Constants.Popup.headerHeight + (Constants.Popup.margins*2) + Constants.Popup.footerHeight
         )
         
         self.windowHeight = NSScreen.main?.visibleFrame.height // for height recalculate when appear/disappear
@@ -267,8 +365,9 @@ internal class PopupView: NSView {
         self.background.setFrameSize(size)
         self.body.setFrameSize(NSSize(
             width: size.width - (Constants.Popup.margins*2) + (isScrollVisible ? 20 : 0),
-            height: size.height - Constants.Popup.headerHeight - (Constants.Popup.margins*2)
+            height: size.height - Constants.Popup.headerHeight - (Constants.Popup.margins*2) - Constants.Popup.footerHeight
         ))
+        self.footer.setFrameSize(NSSize(width: size.width - (Constants.Popup.margins*2), height: self.footer.frame.height))
         self.header.setFrameOrigin(NSPoint(x: 0, y: size.height - Constants.Popup.headerHeight))
         
         if let view = view {
@@ -312,7 +411,7 @@ internal class PopupView: NSView {
         var isScrollVisible: Bool = false
         var windowSize: NSSize = NSSize(
             width: size.width + (Constants.Popup.margins*2),
-            height: size.height + Constants.Popup.headerHeight + (Constants.Popup.margins*2)
+            height: size.height + Constants.Popup.headerHeight + (Constants.Popup.margins*2) + Constants.Popup.footerHeight
         )
         let h0 = self.containerHeight ?? 0
         
@@ -331,11 +430,12 @@ internal class PopupView: NSView {
         self.background.setFrameSize(windowSize)
         self.body.setFrameSize(NSSize(
             width: windowSize.width - (Constants.Popup.margins*2) + (isScrollVisible ? 20 : 0),
-            height: windowSize.height - Constants.Popup.headerHeight - (Constants.Popup.margins*2)
+            height: windowSize.height - Constants.Popup.headerHeight - (Constants.Popup.margins*2) - Constants.Popup.footerHeight
         ))
+        self.footer.setFrameSize(NSSize(width: windowSize.width - (Constants.Popup.margins*2), height: self.footer.frame.height))
         self.header.setFrameOrigin(NSPoint(
             x: self.header.frame.origin.x,
-            y: self.body.frame.height + (Constants.Popup.margins*2)
+            y: self.body.frame.height + (Constants.Popup.margins*2) + Constants.Popup.footerHeight
         ))
         
         if let documentView = self.body.documentView {
@@ -346,6 +446,92 @@ internal class PopupView: NSView {
             ))
         }
     }
+}
+
+/// The tuning strip at the bottom of every popup: three mini sliders that
+/// control how solid each glass layer is (background sheet, bubbles, charts).
+/// Values persist and apply live via `.glassLevelsChanged`.
+private class GlassTuningView: NSStackView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+
+        self.orientation = .horizontal
+        self.distribution = .fillEqually
+        self.spacing = 8
+        self.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
+
+        self.addArrangedSubview(self.group(
+            symbol: "macwindow", key: GlassLevels.backgroundKey,
+            value: GlassLevels.background, tooltip: "Background glass"
+        ))
+        self.addArrangedSubview(self.group(
+            symbol: "square.stack.3d.up", key: GlassLevels.bubbleKey,
+            value: GlassLevels.bubble, tooltip: "Bubble glass"
+        ))
+        self.addArrangedSubview(self.group(
+            symbol: "chart.xyaxis.line", key: GlassLevels.chartKey,
+            value: GlassLevels.chart, tooltip: "Chart glass"
+        ))
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func group(symbol: String, key: String, value: CGFloat, tooltip: String) -> NSStackView {
+        let view = NSStackView()
+        view.orientation = .horizontal
+        view.spacing = 3
+
+        let icon = NSImageView(image: iconFromSymbol(name: symbol, scale: .small))
+        icon.contentTintColor = .secondaryLabelColor
+        icon.toolTip = localizedString(tooltip)
+
+        let slider = NSSlider(value: Double(value), minValue: 0, maxValue: 1, target: self, action: #selector(self.changed))
+        slider.controlSize = .mini
+        slider.isContinuous = true
+        slider.identifier = NSUserInterfaceItemIdentifier(key)
+        slider.toolTip = localizedString(tooltip)
+
+        view.addArrangedSubview(icon)
+        view.addArrangedSubview(slider)
+        return view
+    }
+
+    @objc private func changed(_ sender: NSSlider) {
+        guard let key = sender.identifier?.rawValue else { return }
+        Store.shared.set(key: key, value: sender.doubleValue)
+        NotificationCenter.default.post(name: .glassLevelsChanged, object: nil)
+    }
+}
+
+/// A soft white gradient falling from the top edge — the specular sheen of
+/// light hitting the glass sheet. Non-interactive.
+private class SheenView: NSView {
+    private let gradient = CAGradientLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        self.wantsLayer = true
+        self.gradient.colors = [
+            NSColor.white.withAlphaComponent(0.12).cgColor,
+            NSColor.white.withAlphaComponent(0.0).cgColor
+        ]
+        self.gradient.startPoint = CGPoint(x: 0.5, y: 1)
+        self.gradient.endPoint = CGPoint(x: 0.5, y: 0)
+        self.layer?.addSublayer(self.gradient)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        self.gradient.frame = self.bounds
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 internal class HeaderView: NSStackView {
@@ -375,7 +561,7 @@ internal class HeaderView: NSStackView {
         activity.bezelStyle = .regularSquare
         activity.translatesAutoresizingMaskIntoConstraints = false
         activity.imageScaling = .scaleNone
-        activity.contentTintColor = .lightGray
+        activity.contentTintColor = .secondaryLabelColor
         activity.isBordered = false
         activity.target = self
         activity.focusRingType = .none
@@ -391,7 +577,7 @@ internal class HeaderView: NSStackView {
         title.backgroundColor = .clear
         title.canDrawSubviewsIntoLayer = true
         title.alignment = .center
-        title.font = NSFont.systemFont(ofSize: 16, weight: .regular)
+        title.font = NSFont.systemFont(ofSize: 15, weight: .semibold)
         title.stringValue = ""
         self.titleView = title
         
@@ -402,7 +588,7 @@ internal class HeaderView: NSStackView {
         settings.translatesAutoresizingMaskIntoConstraints = false
         settings.imageScaling = .scaleNone
         settings.image = iconFromSymbol(name: "command", scale: .large)
-        settings.contentTintColor = .lightGray
+        settings.contentTintColor = .secondaryLabelColor
         settings.isBordered = false
         settings.action = #selector(self.openSettings)
         settings.target = self

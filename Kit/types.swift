@@ -299,6 +299,7 @@ internal class MonochromeColor {
 public typealias colorZones = (orange: Double, red: Double)
 
 public extension Notification.Name {
+    static let glassLevelsChanged = Notification.Name("glassLevelsChanged")
     static let toggleSettings = Notification.Name("toggleSettings")
     static let toggleModule = Notification.Name("toggleModule")
     static let togglePopup = Notification.Name("togglePopup")

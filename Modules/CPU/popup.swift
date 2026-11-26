@@ -237,11 +237,8 @@ internal class Popup: PopupWrapper {
         let separator = separatorView(localizedString("Usage history"), origin: NSPoint(x: 0, y: 0), width: self.frame.width)
         
         let lineChartContainer: NSView = {
-            let box: NSView = NSView(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: 70))
+            let box: GlassView = glassCard(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: 70))
             box.heightAnchor.constraint(equalToConstant: box.frame.height).isActive = true
-            box.wantsLayer = true
-            box.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
-            box.layer?.cornerRadius = Constants.Popup.radius
             
             let chartFrame = NSRect(x: 1, y: 0, width: box.frame.width - 2, height: box.frame.height)
             self.lineChart = LineChartView(frame: chartFrame, num: self.lineChartHistory, scale: self.lineChartScale, fixedScale: self.lineChartFixedScale)
@@ -256,11 +253,8 @@ internal class Popup: PopupWrapper {
         
         if let cores = SystemKit.shared.device.info.cpu?.logicalCores {
             let barChartContainer: NSView = {
-                let box: NSView = NSView(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: 50))
+                let box: GlassView = glassCard(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: 50))
                 box.heightAnchor.constraint(equalToConstant: box.frame.height).isActive = true
-                box.wantsLayer = true
-                box.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
-                box.layer?.cornerRadius = 3
                 
                 let chart = ColumnChartView(frame: NSRect(
                     x: Constants.Popup.spacing,

@@ -1,3 +1,23 @@
+> **This is a modified copy of [exelban/stats](https://github.com/exelban/stats).**
+> The original project is the work of its authors. This copy adds my own changes on top of upstream commit `1c87299f` and is not affiliated with or endorsed by them.
+
+## My changes
+
+- **Liquid Glass popups:** a frosted glass sheet with floating cards on macOS 26 and later, with an emulated frosted look on older systems.
+- **Opacity sliders:** a strip at the bottom of each popup adjusts the background, card and chart layers live, in both light and dark mode.
+- **Grouped sensors:** sensor sections are shown as cards with icon headers.
+- **Charts:** rolling auto-fit scaling and segmented bar rendering.
+- **Settings sidebar:** capsule-style selection on macOS 26 and later.
+- **Click-through fix:** a near-invisible backing layer keeps the glass popup clickable.
+
+### Notes on this copy
+
+- For local ad-hoc signed builds, the SMC helper now accepts a client when neither side has a signing certificate, and the widgets entitlements disable library validation. Both relax security checks; review them before distributing a build.
+
+The upstream README follows. Its download links and badges point to the original project, not to this copy.
+
+---
+
 # Stats
 
 <a href="https://github.com/exelban/stats/releases"><p align="center"><img src="https://github.com/exelban/stats/raw/master/Stats/Supporting%20Files/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="120"></p></a>

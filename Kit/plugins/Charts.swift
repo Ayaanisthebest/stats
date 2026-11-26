@@ -199,8 +199,10 @@ public class LineChartView: ChartView {
     private var head: Int = 0
     private var shadowPoints: [DoubleValue?] = []
     private var transparent: Bool = true
+    private var bars: Bool = false
     private var flipY: Bool = false
     private var minMax: Bool = false
+    private var fit: Bool = false
     private var color: NSColor
     private var suffix: String
     private var toolTipFunc: ((DoubleValue) -> String)?
@@ -266,8 +268,10 @@ public class LineChartView: ChartView {
         var originalPoints: [DoubleValue?] = []
         var shadowPoints: [DoubleValue?] = []
         var transparent: Bool = true
+        var bars: Bool = false
         var flipY: Bool = false
         var minMax: Bool = false
+        var fit: Bool = false
         var color: NSColor = .controlAccentColor
         var suffix: String = "%"
         var toolTipFunc: ((DoubleValue) -> String)?
@@ -281,8 +285,10 @@ public class LineChartView: ChartView {
             originalPoints = self.orderedPointsLocked()
             shadowPoints = self.shadowPoints
             transparent = self.transparent
+            bars = self.bars
             flipY = self.flipY
             minMax = self.minMax
+            fit = self.fit
             color = self.color
             suffix = self.suffix
             toolTipFunc = self.toolTipFunc
@@ -298,9 +304,20 @@ public class LineChartView: ChartView {
         guard let context = NSGraphicsContext.current?.cgContext, !points.isEmpty else { return }
         context.setShouldAntialias(true)
         var maxValue: Double = 0
+        var minValue: Double = .greatestFiniteMagnitude
         for opt in points {
-            if let p = opt, p.value > maxValue { maxValue = p.value }
+            if let p = opt {
+                if p.value > maxValue { maxValue = p.value }
+                if p.value < minValue { minValue = p.value }
+            }
         }
+        if minValue == .greatestFiniteMagnitude { minValue = 0 }
+        // Auto-fit window: map [lo, hi] into a band that keeps a flat line
+        // resting near the bottom and rescales as the value climbs or drops.
+        let fitPadTop: CGFloat = 0.12    // headroom so peaks don't touch the top
+        let fitBaseline: CGFloat = 0.14  // where a flat line sits, above the floor
+        let fitSpan = max(maxValue - minValue, maxValue * 0.15, 0.0001)
+        let fitLo = minValue - fitSpan * Double(fitBaseline)
         
         let lineColor: NSColor = color
         var gradientColor: NSColor = color.withAlphaComponent(0.5)
@@ -334,7 +351,14 @@ public class LineChartView: ChartView {
                 continue
             }
             
-            var y = scaleValue(scale: scale, value: v.value, maxValue: maxValue, zeroValue: zeroValue, maxHeight: height, limit: fixedScale)
+            var y: CGFloat
+            if fit {
+                // Normalize into [0, 1-fitPadTop] relative to the rolling window.
+                let norm = (v.value - fitLo) / (fitSpan * (1 + Double(fitBaseline)))
+                y = CGFloat(max(0, min(1, norm))) * height * (1 - fitPadTop)
+            } else {
+                y = scaleValue(scale: scale, value: v.value, maxValue: maxValue, zeroValue: zeroValue, maxHeight: height, limit: fixedScale)
+            }
             if flipY {
                 y = height - y
             }
@@ -352,35 +376,61 @@ public class LineChartView: ChartView {
             lines.append(line)
         }
         
-        var path = NSBezierPath()
-        for linePoints in lines {
-            if linePoints.count == 1 {
-                path = NSBezierPath(ovalIn: CGRect(x: linePoints[0].x-offset, y: linePoints[0].y-offset, width: 1, height: 1))
+        if bars {
+            // Segmented bar (histogram) rendering: one thin translucent bar per
+            // sample so the frosted glass shows between/behind the columns.
+            let gap: CGFloat = xRatio > 3 ? 1 : 0
+            let barWidth: CGFloat = max(offset, xRatio - gap)
+            let corner: CGFloat = min(1.5, barWidth/2)
+            for linePoints in lines {
+                for pt in linePoints {
+                    let rectY = min(zero, pt.y)
+                    let rectH = max(abs(pt.y - zero), offset)
+                    let bar = NSBezierPath(roundedRect: CGRect(
+                        x: pt.x - barWidth/2,
+                        y: rectY,
+                        width: barWidth,
+                        height: rectH
+                    ), xRadius: corner, yRadius: corner)
+                    if let gradient {
+                        gradient.draw(in: bar, angle: 90)
+                    } else {
+                        gradientColor.set()
+                        bar.fill()
+                    }
+                }
+            }
+        } else {
+            var path = NSBezierPath()
+            for linePoints in lines {
+                if linePoints.count == 1 {
+                    path = NSBezierPath(ovalIn: CGRect(x: linePoints[0].x-offset, y: linePoints[0].y-offset, width: 1, height: 1))
+                    lineColor.set()
+                    path.stroke()
+                    gradientColor.set()
+                    path.fill()
+                    continue
+                }
+
+                path = NSBezierPath()
+                path.move(to: linePoints[0])
+                for i in 1..<linePoints.count {
+                    path.line(to: linePoints[i])
+                }
                 lineColor.set()
+                path.lineWidth = offset
                 path.stroke()
-                gradientColor.set()
-                path.fill()
-                continue
-            }
 
-            path = NSBezierPath()
-            path.move(to: linePoints[0])
-            for i in 1..<linePoints.count {
-                path.line(to: linePoints[i])
-            }
-            lineColor.set()
-            path.lineWidth = offset
-            path.stroke()
-
-            path = path.copy() as! NSBezierPath
-            path.line(to: CGPoint(x: linePoints[linePoints.count-1].x, y: zero))
-            path.line(to: CGPoint(x: linePoints[0].x, y: zero))
-            path.close()
-            if let gradient {
-                gradient.draw(in: path, angle: 90)
-            } else {
-                gradientColor.set()
-                path.fill()
+                path = path.copy() as! NSBezierPath
+                path.line(to: CGPoint(x: linePoints[linePoints.count-1].x, y: zero))
+                path.line(to: CGPoint(x: linePoints[0].x, y: zero))
+                path.close()
+                if let gradient {
+                    gradient.draw(in: path, angle: 90)
+                } else {
+                    gradientColor.set()
+                    path.fill()
+                }
             }
         }
         
@@ -681,6 +731,12 @@ public class LineChartView: ChartView {
         self.displayIfVisible()
     }
     
+    public func setBars(_ newValue: Bool) {
+        guard self.read({ self.bars }) != newValue else { return }
+        self.write { self.bars = newValue }
+        self.displayIfVisible()
+    }
+    
     public func setFlipY(_ newValue: Bool) {
         guard self.read({ self.flipY }) != newValue else { return }
         self.write { self.flipY = newValue }
@@ -690,6 +746,15 @@ public class LineChartView: ChartView {
     public func setMinMax(_ newValue: Bool) {
         guard self.read({ self.minMax }) != newValue else { return }
         self.write { self.minMax = newValue }
+        self.displayIfVisible()
+    }
+
+    /// Enables auto-fit scaling: the line is normalized to its own rolling
+    /// min/max so a flat trace rests near the bottom and the chart rescales as
+    /// values rise or fall (instead of pinning to a fixed 0…max range).
+    public func setFit(_ newValue: Bool) {
+        guard self.read({ self.fit }) != newValue else { return }
+        self.write { self.fit = newValue }
         self.displayIfVisible()
     }
     

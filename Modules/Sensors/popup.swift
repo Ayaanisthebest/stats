@@ -33,8 +33,14 @@ internal class Popup: PopupWrapper {
         self.fanValueState = FanValue(rawValue: Store.shared.string(key: "Sensors_popup_fanValue", defaultValue: self.fanValueState.rawValue)) ?? .percentage
         
         self.orientation = .vertical
-        self.spacing = 0
+        self.spacing = 9
         self.translatesAutoresizingMaskIntoConstraints = false
+        // Keep the stack at full popup width and center the (narrower,
+        // shadow-inset) bubbles inside it — otherwise the stack shrinks to
+        // the bubbles' 252pt and hugs the left edge of the scroll area,
+        // leaving 8pt margin on the left but 20pt on the right.
+        self.alignment = .centerX
+        self.widthAnchor.constraint(equalToConstant: Constants.Popup.width).isActive = true
         
         self.settingsView.orientation = .vertical
         self.settingsView.spacing = Constants.Settings.margin
@@ -90,45 +96,43 @@ internal class Popup: PopupWrapper {
             }
         }
         
+        // Bubbles are inset from the scroll edges so their drop shadows have
+        // room to render — flush-width bubbles got their shadows clipped at
+        // the sides, leaving a hard line.
+        let bubbleWidth = self.frame.width - 12
+        let contentWidth = bubbleWidth - (PopupBubbleView.inset*2)
+
         if !fans.isEmpty {
-            let separator = SeparatorView(
-                label: localizedString("Fans"),
+            let header = BubbleHeaderView(
+                localizedString("Fans"),
+                symbol: "fanblades.fill",
                 button: PopupButton(toolTip: localizedString("Control"), state: self.fanControlState) { [weak self] in
                     self?.toggleFanControl()
                 }
             )
-            separator.widthAnchor.constraint(equalToConstant: Constants.Popup.width).isActive = true
-            self.addArrangedSubview(separator)
-            
-            let container = NSStackView()
-            container.orientation = .vertical
-            container.spacing = Constants.Popup.spacing
-            
+            header.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
+            let bubble = PopupBubbleView(width: bubbleWidth, header: header)
+
             fans.forEach { (f: Sensor_p) in
                 if let fan = f as? Fan {
                     if f.isComputed {
-                        let sensor = SensorView(fan, width: self.frame.width, toggleable: false) {}
+                        let sensor = SensorView(fan, width: contentWidth, toggleable: false) {}
                         self.list[fan.key] = sensor
-                        container.addArrangedSubview(sensor)
+                        bubble.addArrangedSubview(sensor)
                     } else {
-                        let view = FanView(fan, width: self.frame.width) { [weak self] in
-                            let h = container.arrangedSubviews.map({ $0.bounds.height + container.spacing }).reduce(0, +) - container.spacing
-                            if container.frame.size.height != h && h >= 0 {
-                                container.setFrameSize(NSSize(width: container.frame.width, height: h))
-                            }
+                        let view = FanView(fan, width: contentWidth) { [weak self, weak bubble] in
+                            bubble?.recalcHeight()
                             self?.recalculateHeight()
                         }
                         self.list[fan.key] = view
-                        container.addArrangedSubview(view)
+                        bubble.addArrangedSubview(view)
                     }
                 }
             }
-            
-            let h = container.arrangedSubviews.map({ $0.bounds.height + container.spacing }).reduce(0, +) - container.spacing
-            if container.frame.size.height != h {
-                container.setFrameSize(NSSize(width: container.frame.width, height: h))
-            }
-            self.addArrangedSubview(container)
+
+            bubble.recalcHeight()
+            self.addArrangedSubview(bubble)
         }
         
         var types: [SensorType] = []
@@ -166,17 +170,24 @@ internal class Popup: PopupWrapper {
             if typ == .fan { return }
             filtered = filtered.filter{ $0.popupState }
             if filtered.isEmpty { return }
-            
-            self.addArrangedSubview(separatorView(localizedString(typ.rawValue), width: self.frame.width))
+
+            let header = BubbleHeaderView(localizedString(typ.rawValue), symbol: typ.symbolName)
+            header.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+            let bubble = PopupBubbleView(width: bubbleWidth, header: header)
+
             groups.forEach { (group: SensorGroup) in
                 filtered.filter{ $0.group == group }.forEach { (s: Sensor_p) in
-                    let sensor = SensorView(s, width: self.frame.width) { [weak self] in
+                    let sensor = SensorView(s, width: contentWidth) { [weak self, weak bubble] in
+                        bubble?.recalcHeight()
                         self?.recalculateHeight()
                     }
-                    self.addArrangedSubview(sensor)
+                    bubble.addArrangedSubview(sensor)
                     self.list[s.key] = sensor
                 }
             }
+
+            bubble.recalcHeight()
+            self.addArrangedSubview(bubble)
         }
         
         if !reload {
@@ -337,8 +348,9 @@ internal class ValueSensorView: NSStackView {
         self.orientation = .horizontal
         self.distribution = .fillProportionally
         self.spacing = 0
-        self.layer?.cornerRadius = 3
-        
+        self.layer?.cornerRadius = 7
+        self.layer?.cornerCurve = .continuous
+
         self.labelView.stringValue = sensor.name
         self.labelView.toolTip = sensor.key
         self.valueView.stringValue = sensor.formattedValue
@@ -377,9 +389,12 @@ internal class ValueSensorView: NSStackView {
     
     public override func mouseEntered(with: NSEvent) {
         guard self.isToggleable else { return }
-        self.layer?.backgroundColor = .init(gray: 0.01, alpha: 0.05)
+        let dark = self.isDarkModeEffective
+        self.layer?.backgroundColor = (dark
+            ? NSColor.black.withAlphaComponent(0.18)
+            : NSColor.white.withAlphaComponent(0.45)).cgColor
     }
-    
+
     public override func mouseExited(with: NSEvent) {
         guard self.isToggleable else { return }
         self.layer?.backgroundColor = .none
@@ -389,24 +404,43 @@ internal class ValueSensorView: NSStackView {
 internal class ChartSensorView: NSStackView {
     private var chart: LineChartView? = nil
     private var currentSuffix: String
-    
+    private let panel: NSView = NSView()
+
     public init(width: CGFloat, suffix: String) {
         self.currentSuffix = suffix
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 60))
-        
+
         self.wantsLayer = true
-        self.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         self.orientation = .horizontal
         self.distribution = .fillProportionally
         self.spacing = 0
-        self.layer?.cornerRadius = 3
-        
+
+        // Soft accent glow bleeding out around the chart.
+        self.layer?.masksToBounds = false
+        self.layer?.shadowColor = NSColor.controlAccentColor.cgColor
+        self.layer?.shadowRadius = 9
+        self.layer?.shadowOffset = .zero
+
+        // Glassy clipped container holding the smooth line chart.
+        self.panel.frame = NSRect(x: 0, y: 0, width: self.frame.width, height: self.frame.height)
+        self.panel.wantsLayer = true
+        self.panel.layer?.cornerRadius = 10
+        self.panel.layer?.cornerCurve = .continuous
+        self.panel.layer?.masksToBounds = true
+        self.panel.layer?.borderWidth = 1
+
         self.chart = LineChartView(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: self.frame.height), num: 120, scale: .linear)
         self.chart?.setSuffix(suffix)
-        
+        self.chart?.setFit(true)
+
         if let view = self.chart {
-            self.addArrangedSubview(view)
+            view.autoresizingMask = [.width, .height]
+            self.panel.addSubview(view)
         }
+        self.addArrangedSubview(self.panel)
+
+        self.applyPanelColors()
+        NotificationCenter.default.addObserver(self, selector: #selector(self.glassLevelsChanged), name: .glassLevelsChanged, object: nil)
         
         NSLayoutConstraint.activate([
             self.widthAnchor.constraint(equalToConstant: self.bounds.width),
@@ -418,10 +452,28 @@ internal class ChartSensorView: NSStackView {
         fatalError("init(coder:) has not been implemented")
     }
     
+    deinit {
+        NotificationCenter.default.removeObserver(self, name: .glassLevelsChanged, object: nil)
+    }
+
+    @objc private func glassLevelsChanged() {
+        self.applyPanelColors()
+    }
+
+    private func applyPanelColors() {
+        let dark = self.isDarkModeEffective
+        let level = GlassLevels.chart
+        self.panel.layer?.backgroundColor = GlassLevels.fill(.chart, dark: dark).cgColor
+        self.panel.layer?.borderColor = (dark
+            ? NSColor.white.withAlphaComponent(0.12)
+            : NSColor.white.withAlphaComponent(0.55)).cgColor
+        self.layer?.shadowOpacity = Float(0.2 + 0.3 * level)
+    }
+
     override func updateLayer() {
         self.chart?.display()
     }
-    
+
     public func update(_ value: Double, _ suffix: String) {
         guard let chart = self.chart else { return }
         if self.currentSuffix != suffix {
@@ -581,8 +633,11 @@ internal class FanView: NSStackView {
         container.distribution = .fillProportionally
         container.spacing = 0
         container.wantsLayer = true
-        container.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 225/255, green: 225/255, blue: 225/255, alpha: 1)).cgColor
-        
+        container.layer?.cornerCurve = .continuous
+        container.layer?.backgroundColor = (isDarkModeEffective
+            ? NSColor.black.withAlphaComponent(0.15)
+            : NSColor.white.withAlphaComponent(0.2)).cgColor
+
         let button: NSButton = NSButton()
         button.isBordered = false
         button.target = self
@@ -1107,9 +1162,12 @@ private class ModeButtons: NSStackView {
     }
     
     override func updateLayer() {
-        self.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
+        self.layer?.cornerCurve = .continuous
+        self.layer?.backgroundColor = (self.isDarkModeEffective
+            ? NSColor.black.withAlphaComponent(0.18)
+            : NSColor.white.withAlphaComponent(0.28)).cgColor
     }
-    
+
     @objc private func offMode(_ sender: NSButton) {
         if sender.state.rawValue == 0 {
             self.offBtn.state = .on
@@ -1234,7 +1292,10 @@ private class ModeSwitch: NSStackView {
     }()
     
     private var selectedColor: CGColor {
-        (isDarkMode ? NSColor(red: 95/255, green: 95/255, blue: 95/255, alpha: 1) : .textBackgroundColor).cgColor
+        // Bright translucent "glass pill" for the selected segment.
+        (self.isDarkModeEffective
+            ? NSColor.white.withAlphaComponent(0.22)
+            : NSColor.white.withAlphaComponent(0.85)).cgColor
     }
     
     init(_ mode: FanMode) {
@@ -1270,7 +1331,12 @@ private class ModeSwitch: NSStackView {
     }
     
     override func updateLayer() {
-        self.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 225/255, green: 225/255, blue: 225/255, alpha: 1)).cgColor
+        self.layer?.cornerCurve = .continuous
+        self.layer?.backgroundColor = (self.isDarkModeEffective
+            ? NSColor.black.withAlphaComponent(0.15)
+            : NSColor.white.withAlphaComponent(0.2)).cgColor
+        self.autoBtn.layer?.cornerCurve = .continuous
+        self.manualBtn.layer?.cornerCurve = .continuous
         self.autoBtn.layer?.backgroundColor = self.autoBtn.state == .on ? self.selectedColor : NSColor.clear.cgColor
         self.manualBtn.layer?.backgroundColor = self.manualBtn.state == .on ? self.selectedColor : NSColor.clear.cgColor
     }

@@ -480,7 +480,13 @@ private class MenuItem: NSView {
         super.init(frame: NSRect.zero)
         
         self.wantsLayer = true
-        self.layer?.cornerRadius = 5
+        if #available(macOS 26.0, *) {
+            // Tahoe-style capsule selection in the glass sidebar.
+            self.layer?.cornerRadius = 8
+            self.layer?.cornerCurve = .continuous
+        } else {
+            self.layer?.cornerRadius = 5
+        }
         
         var toolTip = ""
         if title == "Settings" {
@@ -529,7 +535,11 @@ private class MenuItem: NSView {
         
         NotificationCenter.default.post(name: .openModuleSettings, object: nil, userInfo: ["module": self.title])
         
-        self.layer?.backgroundColor = NSColor.selectedContentBackgroundColor.cgColor
+        if #available(macOS 26.0, *) {
+            self.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        } else {
+            self.layer?.backgroundColor = NSColor.selectedContentBackgroundColor.cgColor
+        }
         self.imageView?.contentTintColor = .white
         self.titleView?.textColor = .white
     }

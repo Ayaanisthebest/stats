@@ -19,8 +19,15 @@ public struct Popup_c_s {
     public let headerHeight: CGFloat = 42
     public let separatorHeight: CGFloat = 30
     public let portalHeight: CGFloat = 120
-    public let radius: CGFloat = 6
+    public let radius: CGFloat = 11
     public let processHeight: CGFloat = 22
+
+    /// Corner radius of the popup's frosted glass sheet.
+    public let glassRadius: CGFloat = 22
+    /// Corner radius of bubble cards floating on the glass sheet.
+    public let cardRadius: CGFloat = 20
+    /// Height of the glass-tuning slider strip at the bottom of popups.
+    public let footerHeight: CGFloat = 26
 }
 
 public struct Settings_c_s {

@@ -310,6 +310,336 @@ public class ValueField: NSTextField {
     }
 }
 
+// MARK: - Liquid Glass
+
+/// User-tunable opacity levels for the three glass layers, 0 = fully clear,
+/// 1 = most solid. Adjusted live via the slider strip at the bottom of every
+/// popup; observers listen for `.glassLevelsChanged`.
+public struct GlassLevels {
+    public static let backgroundKey = "glass_level_background"
+    public static let bubbleKey = "glass_level_bubble"
+    public static let chartKey = "glass_level_chart"
+
+    public static var background: CGFloat {
+        CGFloat(Store.shared.double(key: backgroundKey, defaultValue: 0.12))
+    }
+    public static var bubble: CGFloat {
+        CGFloat(Store.shared.double(key: bubbleKey, defaultValue: 0.3))
+    }
+    public static var chart: CGFloat {
+        CGFloat(Store.shared.double(key: chartKey, defaultValue: 0.5))
+    }
+
+    public enum Layer {
+        case background, bubble, chart
+    }
+
+    /// Fill color for a glass layer: BLACK in dark mode, WHITE in light mode.
+    /// (Every fill in this app used to tint white regardless of appearance —
+    /// in dark mode that just faintly whitened whatever wallpaper showed
+    /// through instead of darkening it, so dark mode looked like light mode
+    /// smeared with haze. Alpha blends the user's slider level between a
+    /// floor and ceiling per layer/appearance, so dark mode always reads
+    /// dark even over a bright wallpaper, light mode stays light, and
+    /// neither extreme goes fully opaque.)
+    public static func fill(_ layer: Layer, dark: Bool) -> NSColor {
+        let level: CGFloat
+        switch layer {
+        case .background: level = background
+        case .bubble: level = bubble
+        case .chart: level = chart
+        }
+        let range: (lo: CGFloat, hi: CGFloat)
+        switch layer {
+        // Somewhat-opaque sheet: solid enough to read as a surface, but
+        // deliberately short of full opacity — the glass bubbles can only
+        // refract what bleeds through it (fully opaque went flat black).
+        case .background: range = dark ? (0.35, 0.8) : (0.3, 0.8)
+        // Bubble floor is near zero: at slider 0 the bubbles are pure,
+        // untinted refractive glass.
+        case .bubble: range = dark ? (0.02, 0.5) : (0.02, 0.5)
+        case .chart: range = dark ? (0.22, 0.6) : (0.1, 0.6)
+        }
+        let alpha = range.lo + level * (range.hi - range.lo)
+        return (dark ? NSColor.black : NSColor.white).withAlphaComponent(alpha)
+    }
+}
+
+/// A "liquid glass" content surface.
+///
+/// On macOS 26 (Tahoe) and newer this renders as an opaque bubble card —
+/// a soft fill with a hairline edge — floating on the popup's frosted glass
+/// sheet, matching `PopupBubbleView`. On older systems the frosted look is
+/// emulated with `NSVisualEffectView` (blur) + a translucent tint + a
+/// luminous hairline edge. Content added via `addSubview` always composites
+/// above the material.
+public class GlassView: NSView {
+    private var tintView: NSView? = nil
+    private var glassEffect: NSView? = nil
+
+    public init(
+        frame: NSRect = .zero,
+        radius: CGFloat = Constants.Popup.radius,
+        material: NSVisualEffectView.Material = .underWindowBackground,
+        blending: NSVisualEffectView.BlendingMode = .withinWindow
+    ) {
+        super.init(frame: frame)
+
+        self.wantsLayer = true
+        self.layer?.masksToBounds = true
+        self.layer?.cornerRadius = radius
+        self.layer?.cornerCurve = .continuous
+        self.layer?.borderWidth = 1
+
+        if #unavailable(macOS 26.0) {
+            let effect = NSVisualEffectView(frame: self.bounds)
+            effect.material = material
+            effect.blendingMode = blending
+            effect.state = .active
+            effect.autoresizingMask = [.width, .height]
+            self.addSubview(effect)
+
+            // Faint tint fill (kept behind any content) to lift the frosted
+            // material off darker chart pixels and improve legibility.
+            let tint = NSView(frame: self.bounds)
+            tint.autoresizingMask = [.width, .height]
+            tint.wantsLayer = true
+            self.tintView = tint
+            self.addSubview(tint)
+        }
+
+        if #available(macOS 26.0, *) {
+            // The card IS a real Liquid Glass element, floating on the
+            // opaque sheet behind it. Content stays above as siblings —
+            // safe because the click-through bug was window-server-level
+            // (fixed by the popup's event backstop), not view-level.
+            let glass = NSGlassEffectView(frame: self.bounds)
+            glass.autoresizingMask = [.width, .height]
+            glass.cornerRadius = radius
+            // `.clear` = maximum refraction/lensing for the bubbles.
+            glass.style = .clear
+            self.glassEffect = glass
+            self.addSubview(glass, positioned: .below, relativeTo: nil)
+            // Bright hairline edge + floating shadow so the glass card
+            // visibly pops off the sheet behind it.
+            self.layer?.borderWidth = 1
+            self.layer?.masksToBounds = false
+            self.layer?.shadowColor = NSColor.black.cgColor
+            self.layer?.shadowOffset = NSSize(width: 0, height: -2)
+            self.layer?.shadowRadius = 6
+        }
+
+        self.applyColors()
+        NotificationCenter.default.addObserver(self, selector: #selector(self.glassLevelsChanged), name: .glassLevelsChanged, object: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self, name: .glassLevelsChanged, object: nil)
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        self.applyColors()
+    }
+
+    @objc private func glassLevelsChanged() {
+        self.applyColors()
+    }
+
+    private func applyColors() {
+        let dark = self.isDarkModeEffective
+        if #available(macOS 26.0, *) {
+            // Real glass: the bubble slider drives the glass tint; the
+            // hairline + shadow make the card pop off the sheet.
+            (self.glassEffect as? NSGlassEffectView)?.tintColor = GlassLevels.fill(.bubble, dark: dark)
+            self.layer?.backgroundColor = NSColor.clear.cgColor
+            self.layer?.borderColor = (dark
+                ? NSColor.white.withAlphaComponent(0.28)
+                : NSColor.white.withAlphaComponent(0.75)).cgColor
+            self.layer?.shadowOpacity = dark ? 0.3 : 0.15
+        } else {
+            self.layer?.borderColor = (dark
+                ? NSColor.white.withAlphaComponent(0.12)
+                : NSColor.white.withAlphaComponent(0.5)).cgColor
+            self.tintView?.layer?.backgroundColor = (dark
+                ? NSColor.white.withAlphaComponent(0.05)
+                : NSColor.white.withAlphaComponent(0.25)).cgColor
+        }
+    }
+}
+
+/// Returns a ready-to-use liquid glass card sized to `frame`.
+public func glassCard(frame: NSRect = .zero, radius: CGFloat = Constants.Popup.radius, material: NSVisualEffectView.Material = .underWindowBackground) -> GlassView {
+    return GlassView(frame: frame, radius: radius, material: material)
+}
+
+/// An opaque rounded "bubble" that groups a section of popup content
+/// (header row + value rows), floating on the popup's frosted glass sheet —
+/// Control Center style. Heights are managed manually (frame-based) to match
+/// how popups in this codebase size themselves.
+public class PopupBubbleView: NSStackView {
+    public static let inset: CGFloat = 8
+    private var glassEffect: NSView? = nil
+
+    public init(width: CGFloat, header: NSView? = nil) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 0))
+
+        self.orientation = .vertical
+        self.distribution = .fill
+        self.alignment = .centerX
+        self.spacing = Constants.Popup.spacing
+
+        // When added via addArrangedSubview the frame width is discarded and
+        // the bubble shrinks to its rows' width (content width, not `width`),
+        // which left the whole column hugging the left edge of the popup.
+        // A required width constraint keeps the bubble exactly `width` wide.
+        self.widthAnchor.constraint(equalToConstant: width).isActive = true
+        self.edgeInsets = NSEdgeInsets(top: 6, left: PopupBubbleView.inset, bottom: 10, right: PopupBubbleView.inset)
+
+        self.wantsLayer = true
+        self.layer?.cornerRadius = Constants.Popup.cardRadius
+        self.layer?.cornerCurve = .continuous
+
+        if #available(macOS 26.0, *) {
+            // The bubble IS a real Liquid Glass element floating on the
+            // opaque sheet. Rows stay above as siblings — safe because the
+            // click-through bug was window-server-level (fixed by the
+            // popup's event backstop), not view-level.
+            let glass = NSGlassEffectView(frame: self.bounds)
+            glass.autoresizingMask = [.width, .height]
+            glass.cornerRadius = Constants.Popup.cardRadius
+            // `.clear` = maximum refraction/lensing for the bubbles.
+            glass.style = .clear
+            self.glassEffect = glass
+            self.addSubview(glass, positioned: .below, relativeTo: nil)
+            // Bright hairline edge + floating shadow so the glass bubble
+            // visibly pops off the sheet behind it.
+            self.layer?.borderWidth = 1
+            self.layer?.masksToBounds = false
+            self.layer?.shadowColor = NSColor.black.cgColor
+            self.layer?.shadowOffset = NSSize(width: 0, height: -2)
+            self.layer?.shadowRadius = 6
+        } else {
+            self.layer?.borderWidth = 1
+        }
+
+        if let header {
+            self.addArrangedSubview(header)
+        }
+
+        self.applyColors()
+        NotificationCenter.default.addObserver(self, selector: #selector(self.glassLevelsChanged), name: .glassLevelsChanged, object: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self, name: .glassLevelsChanged, object: nil)
+    }
+
+    public override func updateLayer() {
+        self.applyColors()
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        self.applyColors()
+    }
+
+    @objc private func glassLevelsChanged() {
+        self.applyColors()
+    }
+
+    /// Recomputes the bubble height from its content. Call after adding rows
+    /// or when a row changes size (e.g. an inline chart expands).
+    public func recalcHeight() {
+        let h = self.arrangedSubviews
+            .map({ max($0.bounds.height, $0.fittingSize.height) + self.spacing })
+            .reduce(0, +) - self.spacing + self.edgeInsets.top + self.edgeInsets.bottom
+        if self.frame.height != h && h >= 0 {
+            self.setFrameSize(NSSize(width: self.frame.width, height: h))
+        }
+    }
+
+    private func applyColors() {
+        let dark = self.isDarkModeEffective
+        if #available(macOS 26.0, *) {
+            // Real glass: the bubble slider drives the glass tint; the
+            // hairline + shadow make the bubble pop off the sheet.
+            (self.glassEffect as? NSGlassEffectView)?.tintColor = GlassLevels.fill(.bubble, dark: dark)
+            self.layer?.backgroundColor = NSColor.clear.cgColor
+            self.layer?.borderColor = (dark
+                ? NSColor.white.withAlphaComponent(0.28)
+                : NSColor.white.withAlphaComponent(0.75)).cgColor
+            self.layer?.shadowOpacity = dark ? 0.3 : 0.15
+            return
+        }
+        self.layer?.backgroundColor = GlassLevels.fill(.bubble, dark: dark).cgColor
+        self.layer?.borderColor = (dark
+            ? NSColor.white.withAlphaComponent(0.18)
+            : NSColor.white.withAlphaComponent(0.6)).cgColor
+    }
+}
+
+/// Header row for a `PopupBubbleView`: a centered SF Symbol icon + prominent
+/// title, with an optional trailing accessory. The title uses `labelColor`,
+/// so it is dark on light backgrounds and light on dark ones.
+public class BubbleHeaderView: NSStackView {
+    public init(_ title: String, symbol: String? = nil, button: NSView? = nil) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 0, height: Constants.Popup.separatorHeight))
+
+        self.orientation = .horizontal
+        self.alignment = .centerY
+        self.distribution = .fill
+        self.spacing = 6
+        self.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 0, right: 2)
+        self.translatesAutoresizingMaskIntoConstraints = false
+
+        // Equal-width flexible spacers keep the icon + title centered.
+        let leftSpacer = NSView()
+        let rightSpacer = NSView()
+        leftSpacer.translatesAutoresizingMaskIntoConstraints = false
+        rightSpacer.translatesAutoresizingMaskIntoConstraints = false
+
+        self.addArrangedSubview(leftSpacer)
+
+        if let symbol {
+            let iconView = NSImageView(image: iconFromSymbol(name: symbol, scale: .large))
+            iconView.contentTintColor = .controlAccentColor
+            iconView.translatesAutoresizingMaskIntoConstraints = false
+            self.addArrangedSubview(iconView)
+        }
+
+        let label = NSTextField(labelWithString: title)
+        label.font = NSFont.systemFont(ofSize: 15, weight: .semibold)
+        label.textColor = .labelColor
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        self.addArrangedSubview(label)
+
+        self.addArrangedSubview(rightSpacer)
+
+        if let button {
+            self.addArrangedSubview(button)
+        }
+
+        NSLayoutConstraint.activate([
+            self.heightAnchor.constraint(equalToConstant: Constants.Popup.separatorHeight),
+            leftSpacer.widthAnchor.constraint(equalTo: rightSpacer.widthAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
 public class StatusBadgeView: NSStackView {
     private var status: Bool?
     private let ok: String
@@ -1538,6 +1868,22 @@ var isDarkMode: Bool {
     }
 }
 
+public extension NSView {
+    /// Whether this view is currently drawing in a dark appearance, resolved
+    /// from the view's OWN `effectiveAppearance` (which tracks the system
+    /// light/dark switch) rather than the global `NSAppearance.currentDrawing`,
+    /// which is only accurate inside a draw pass. Use this for glass tinting so
+    /// colors set from notification handlers or `init` still pick the right mode.
+    var isDarkModeEffective: Bool {
+        switch self.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
+        case .darkAqua:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 public class PreferencesSection: NSStackView {
     private let container: NSStackView = NSStackView()
     private var subtitleField: NSTextField?
@@ -1559,6 +1905,10 @@ public class PreferencesSection: NSStackView {
         self.container.wantsLayer = true
         self.container.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.025).cgColor
         self.container.layer?.cornerRadius = Constants.Settings.margin
+        self.container.layer?.borderWidth = 1
+        if #available(macOS 10.15, *) {
+            self.container.layer?.cornerCurve = .continuous
+        }
         self.container.edgeInsets = NSEdgeInsets(
             top: Constants.Settings.margin/1.25,
             left: Constants.Settings.margin,
@@ -1579,6 +1929,9 @@ public class PreferencesSection: NSStackView {
     
     public override func updateLayer() {
         self.container.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.025).cgColor
+        self.container.layer?.borderColor = (self.isDarkMode
+            ? NSColor.white.withAlphaComponent(0.06)
+            : NSColor.white.withAlphaComponent(0.4)).cgColor
     }
     
     private func addHeader(title: String, subtitle: String) {

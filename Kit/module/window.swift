@@ -367,7 +367,12 @@ private class WidgetSelectorView: NSStackView {
         }
         view.state = .active
         view.wantsLayer = true
-        view.layer?.cornerRadius = 5
+        if #available(macOS 26.0, *) {
+            view.layer?.cornerRadius = 8
+            view.layer?.cornerCurve = .continuous
+        } else {
+            view.layer?.cornerRadius = 5
+        }
         return view
     }()
     

@@ -28,6 +28,18 @@ public enum SensorType: String, Codable {
     case power = "Power"
     case energy = "Energy"
     case fan = "Fans"
+
+    /// SF Symbol shown next to the section title in the popup.
+    public var symbolName: String {
+        switch self {
+        case .temperature: return "thermometer.medium"
+        case .voltage: return "bolt.fill"
+        case .current: return "waveform.path.ecg"
+        case .power: return "bolt.circle.fill"
+        case .energy: return "battery.100"
+        case .fan: return "fanblades.fill"
+        }
+    }
 }
 
 public protocol Sensor_p {

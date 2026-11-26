@@ -257,6 +257,11 @@ struct CodesignCheck {
         do {
             let selfCerts = try self.codeSigningCertificatesForSelf()
             let fileCerts = try self.codeSigningCertificates(forStaticCode: code)
+            if selfCerts.isEmpty && fileCerts.isEmpty {
+                // ad-hoc signed (local build): no certificate chain to compare.
+                // integrity is already validated by SecStaticCodeCheckValidity above.
+                return true
+            }
             return !selfCerts.isEmpty && selfCerts == fileCerts
         } catch {
             return false
